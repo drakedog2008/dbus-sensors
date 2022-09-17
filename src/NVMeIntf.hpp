@@ -3,6 +3,7 @@
 
 #include <functional>
 #include <memory>
+#include <span>
 #include <variant>
 
 class NVMeBasicIntf;
@@ -118,4 +119,10 @@ class NVMeMiIntf
                        cb) = 0;
 
     virtual ~NVMeMiIntf() = default;
+
+    virtual void adminIdentify(
+        nvme_mi_ctrl_t ctrl, nvme_identify_cns cns, uint32_t nsid,
+        uint16_t cntid,
+        std::function<void(const std::error_code&, std::span<uint8_t>)>&&
+            cb) = 0;
 };
