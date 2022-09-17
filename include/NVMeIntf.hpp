@@ -3,6 +3,7 @@
 
 #include <functional>
 #include <memory>
+#include <span>
 
 class NVMeIntf
 {
@@ -58,4 +59,9 @@ class NVMeMiIntf : public NVMeIntf
         miScanCtrl(std::function<void(const std::error_code&,
                                       const std::vector<nvme_mi_ctrl_t>&)>
                        cb) = 0;
+    virtual void adminIdentify(
+        nvme_mi_ctrl_t ctrl, nvme_identify_cns cns, uint32_t nsid,
+        uint16_t cntid,
+        std::function<void(const std::error_code&, std::span<uint8_t>)>&&
+            cb) = 0;
 };
