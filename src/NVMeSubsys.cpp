@@ -175,6 +175,35 @@ void NVMeSubsys::start()
                 index++;
             }
 
+            /* find primary controller and make association */
+            auto ctrl = ctrlList.back();
+            nvme->adminIdentify(
+                ctrl, nvme_identify_cns::NVME_IDENTIFY_CNS_SECONDARY_CTRL_LIST,
+                0, 0,
+                [](const std::error_code& ec, std::span<uint8_t> data) {
+                if (ec || data.size() < sizeof(nvme_secondary_ctrl_list))
+                {
+                    std::cerr << "fail to identify secondary controller list"
+                              << std::endl;
+                    return;
+                }
+                nvme_secondary_ctrl_list& listHdr =
+                    *reinterpret_cast<nvme_secondary_ctrl_list*>(data.data());
+
+                if (listHdr.num == 0)
+                {
+                    std::cerr << "empty identify secondary controller list"
+                              << std::endl;
+                    return;
+                }
+
+                for (int i = 0; i < listHdr.num; i++)
+                {
+                    std::cerr << "primary controller id: "
+                              << static_cast<int>(listHdr.sc_entry[i].pcid)
+                              << std::endl;
+                }
+                });
         });
     }
 
