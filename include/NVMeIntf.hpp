@@ -1,4 +1,6 @@
 #pragma once
+#include <libnvme-mi.h>
+
 #include <functional>
 #include <memory>
 
@@ -42,4 +44,18 @@ class NVMeBasicIntf : public NVMeIntf
 
     ~NVMeBasicIntf() override = default;
     ;
+};
+
+class NVMeMiIntf : public NVMeIntf
+{
+  public:
+    virtual int getNID() const = 0;
+    virtual int getEID() const = 0;
+    virtual void miSubsystemHealthStatusPoll(
+        std::function<void(const std::error_code&,
+                           nvme_mi_nvm_ss_health_status*)>&& cb) = 0;
+    virtual void
+        miScanCtrl(std::function<void(const std::error_code&,
+                                      const std::vector<nvme_mi_ctrl_t>&)>
+                       cb) = 0;
 };
