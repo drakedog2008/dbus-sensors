@@ -10,7 +10,6 @@ class NVMeIntf
   public:
     NVMeIntf() = default;
     virtual ~NVMeIntf() = default;
-    ;
 };
 
 // Interface to get information via NVMe MI Basic CMD protocol.
@@ -44,7 +43,6 @@ class NVMeBasicIntf : public NVMeIntf
         std::function<void(const std::error_code&, DriveStatus*)>&& cb) = 0;
 
     ~NVMeBasicIntf() override = default;
-    ;
 };
 
 class NVMeMiIntf : public NVMeIntf
@@ -62,6 +60,11 @@ class NVMeMiIntf : public NVMeIntf
     virtual void adminIdentify(
         nvme_mi_ctrl_t ctrl, nvme_identify_cns cns, uint32_t nsid,
         uint16_t cntid,
+        std::function<void(const std::error_code&, std::span<uint8_t>)>&&
+            cb) = 0;
+    virtual void adminGetLogPage(
+        nvme_mi_ctrl_t ctrl, nvme_cmd_get_log_lid lid, uint32_t nsid,
+        uint8_t lsp, uint16_t lsi,
         std::function<void(const std::error_code&, std::span<uint8_t>)>&&
             cb) = 0;
 };

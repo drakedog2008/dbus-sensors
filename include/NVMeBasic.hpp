@@ -41,7 +41,6 @@ class NVMeBasic :
     void getStatus(std::function<void(const std::error_code&, DriveStatus*)>&&
                        cb) override;
     ~NVMeBasic() override = default;
-    ;
 
   private:
     boost::asio::io_context& io;
