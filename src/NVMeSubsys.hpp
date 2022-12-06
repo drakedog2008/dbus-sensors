@@ -85,4 +85,7 @@ class NVMeSubsystem : public std::enable_shared_from_this<NVMeSubsystem>
                                 ctemp_fetcher_t<T> dataFetcher,
                                 boost::system::error_code errorCode, T data);
     };
+
+    std::vector<Association> associations;
+    void createStorageAssociation();
 };
