@@ -223,7 +223,7 @@ if get_option('nvme').enabled()
         'nvmesensor',
         sources: nvme_srcs,
         dependencies: nvme_deps,
-        cpp_args: [uring_args, '-UBOOST_ASIO_NO_DEPRECATED'], 
+        cpp_args: uring_args + ['-frtti', '-UBOOST_ASIO_NO_DEPRECATED', '-UBOOST_ASIO_DISABLE_THREADS', '-UBOOST_ASIO_HAS_IO_URING'],
         install: true,
     )
 endif
