@@ -96,7 +96,15 @@ static void handleConfigurations(
     }
     nvmeSubsysMap.clear();
 
-    // iterate through all found configurations
+    /* We perform two iterations for configurations here. The first iteration is
+     * to set up NVMeIntf. The second iter is to setup NVMe subsystem.
+     *
+     * The reason to seperate these two processes is NVMeIntf initialization of
+     * NVMeMI is via MCTPd, from which the mctp control msg should be relatively
+     * short and should not be delayed by NVMe-MI protocol msg from NVMe
+     * subsystem.
+     */
+    std::map<std::string, NVMeIntf> nvmeInterfaces;
     for (const auto& [interfacePath, configData] : nvmeConfigurations)
     {
         // find base configuration
@@ -139,15 +147,11 @@ static void handleConfigurations(
                 NVMeIntf nvmeBasic =
                     NVMeIntf::create<NVMeBasic>(io, *busNumber, *address);
 
-                auto nvmeSubsys = std::make_shared<NVMeSubsystem>(
-                    io, objectServer, dbusConnection, interfacePath,
-                    *sensorName, std::move(nvmeBasic));
-                nvmeSubsysMap.emplace(interfacePath, nvmeSubsys);
-                nvmeSubsys->start(configData);
+                nvmeInterfaces.emplace(interfacePath, std::move(nvmeBasic));
             }
             catch (std::exception& ex)
             {
-                std::cerr << "Failed to add subsystem for "
+                std::cerr << "Failed to add nvme basic interface for "
                           << std::string(interfacePath) << ": " << ex.what()
                           << "\n";
                 continue;
@@ -166,19 +170,50 @@ static void handleConfigurations(
                     io, dynamic_cast<sdbusplus::bus_t&>(*dbusConnection),
                     *busNumber, *address);
 
-                auto nvmeSubsys = std::make_shared<NVMeSubsystem>(
-                    io, objectServer, dbusConnection, interfacePath,
-                    *sensorName, std::move(nvmeMi));
-                nvmeSubsysMap.emplace(interfacePath, nvmeSubsys);
-                nvmeSubsys->start(configData);
+                nvmeInterfaces.emplace(interfacePath, nvmeMi);
             }
             catch (std::exception& ex)
             {
-                std::cerr << "Failed to add subsystem for "
+                std::cerr << "Failed to add nvme mi interface for "
                           << std::string(interfacePath) << ": " << ex.what()
                           << "\n";
                 continue;
             }
+        }
+    }
+
+    for (const auto& [interfacePath, configData] : nvmeConfigurations)
+    {
+        // find base configuration
+        auto sensorBase =
+            configData.find(configInterfaceName(NVMeSubsystem::sensorType));
+        if (sensorBase == configData.end())
+        {
+            continue;
+        }
+
+        const SensorBaseConfigMap& sensorConfig = sensorBase->second;
+
+        std::optional<std::string> sensorName =
+            extractName(interfacePath, sensorConfig);
+
+        auto find = nvmeInterfaces.find(interfacePath);
+        if (find == nvmeInterfaces.end())
+            continue;
+        try
+        {
+            auto nvmeSubsys = std::make_shared<NVMeSubsystem>(
+                io, objectServer, dbusConnection, interfacePath, *sensorName,
+                std::move(find->second));
+            nvmeSubsysMap.emplace(interfacePath, nvmeSubsys);
+            nvmeSubsys->start(configData);
+        }
+        catch (std::exception& ex)
+        {
+            std::cerr << "Failed to add nvme subsystem for "
+                      << std::string(interfacePath) << ": " << ex.what()
+                      << "\n";
+            continue;
         }
     }
 }
