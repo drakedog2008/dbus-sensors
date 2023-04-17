@@ -36,3 +36,20 @@ test(
         include_directories: '../src',
     )
 )
+
+if run_command('/usr/bin/bash', '-c', 'busctl tree xyz.openbmc_project.ObjectMapper').returncode() == 0
+    test(
+        'test_nvme',
+        executable(
+            'test_nvme',
+            'test_nvme_mi.cpp',
+            '../src/NVMeSensor.cpp',
+            '../src/NVMeSubsys.cpp',
+            '../src/NVMeController.cpp',
+            cpp_args: uring_args + ['-UBOOST_ASIO_NO_DEPRECATED', '-UBOOST_ASIO_DISABLE_THREADS', '-UBOOST_ASIO_HAS_IO_URING'],
+            dependencies: [ut_deps_list, nvme_deps],
+            implicit_include_directories: false,
+            include_directories: '../src',
+        )
+    )
+endif
