@@ -148,6 +148,9 @@ void NVMeMi::initMCTP()
                   << std::to_string(nid) + ":" + std::to_string(eid)
                   << std::endl;
     }
+    // TODO: make a flag to indicate the next health poll should return
+    // no_such_device error. This is to inform the subsystem that the connected
+    // has been reset or hot-swapped.
     std::cerr << "[bus: " << bus << ", addr: " << addr << "]"
               << "finish MCTP initialization.  "
               << std::to_string(nid) + ":" + std::to_string(eid) << std::endl;
@@ -508,18 +511,15 @@ static int nvme_mi_admin_get_log_telemetry_host_rae(nvme_mi_ctrl_t ctrl,
 
 // Get Temetery Log header and return the size for hdr + data area (Area 1, 2,
 // 3, or maybe 4)
-int getTelemetryLog(nvme_mi_ctrl_t ctrl, bool host, bool create,
-                    std::vector<uint8_t>& data)
+int getTelemetryLogSize(nvme_mi_ctrl_t ctrl, bool host, uint32_t& size)
 {
     int rc = 0;
-    data.resize(sizeof(nvme_telemetry_log));
-    nvme_telemetry_log& log =
-        *reinterpret_cast<nvme_telemetry_log*>(data.data());
+    nvme_telemetry_log log;
     auto func = host ? nvme_mi_admin_get_log_telemetry_host_rae
                      : nvme_mi_admin_get_log_telemetry_ctrl;
 
     // Only host telemetry log requires create.
-    if (host && create)
+    if (host)
     {
         rc = nvme_mi_admin_get_log_create_telemetry_host(ctrl, &log);
         if (rc)
@@ -527,7 +527,6 @@ int getTelemetryLog(nvme_mi_ctrl_t ctrl, bool host, bool create,
             std::cerr << "failed to create telemetry host log" << std::endl;
             return rc;
         }
-        return 0;
     }
 
     rc = func(ctrl, false, 0, sizeof(log), &log);
@@ -539,19 +538,93 @@ int getTelemetryLog(nvme_mi_ctrl_t ctrl, bool host, bool create,
         return rc;
     }
 
-    long size =
-        static_cast<long>((boost::endian::little_to_native(log.dalb3) + 1)) *
-        NVME_LOG_TELEM_BLOCK_SIZE;
+    size = static_cast<uint32_t>(
+               (boost::endian::little_to_native(log.dalb3) + 1)) *
+           NVME_LOG_TELEM_BLOCK_SIZE;
+    return rc;
+}
 
-    data.resize(size);
-    rc = func(ctrl, false, 0, data.size(), data.data());
-    if (rc)
+void NVMeMi::getTelemetryLogChuck(
+    nvme_mi_ctrl_t ctrl, bool host, uint64_t offset,
+    std::vector<uint8_t>&& data,
+    std::function<void(const std::error_code&, std::span<uint8_t>)>&& cb)
+{
+
+    if (offset >= data.size())
     {
-        std::cerr << "failed to get full telemetry log for "
-                  << (host ? "host" : "ctrl") << std::endl;
-        return rc;
+
+        std::cerr << "[bus: " << bus << ", addr: " << addr
+                  << ", eid: " << static_cast<int>(eid) << "]"
+                  << "get telemetry log: offset exceed the log size. "
+                  << "offset: " << offset << ", size: " << data.size()
+                  << std::endl;
+        cb(std::make_error_code(std::errc::invalid_argument), {});
+        return;
     }
-    return 0;
+
+    post([self{shared_from_this()}, ctrl, host, offset, data{std::move(data)},
+          cb{std::move(cb)}]() mutable {
+        int rc = 0;
+        bool rae = 1;
+        auto func = host ? nvme_mi_admin_get_log_telemetry_host_rae
+                         : nvme_mi_admin_get_log_telemetry_ctrl;
+        uint32_t size = 0;
+
+        // final transaction
+        if (offset + nvme_mi_xfer_size >= data.size())
+        {
+            rae = 0;
+        }
+        size = std::min(static_cast<uint32_t>(nvme_mi_xfer_size),
+                        static_cast<uint32_t>(data.size() - offset));
+
+        rc = func(ctrl, rae, offset, size, data.data() + offset);
+
+        if (rc < 0)
+        {
+            std::cerr << "[bus: " << self->bus << ", addr: " << self->addr
+                      << ", eid: " << static_cast<int>(self->eid) << "]"
+                      << "fail to get chuck for telemetry log: "
+                      << std::strerror(errno) << std::endl;
+            boost::asio::post(self->io,
+                              [cb{std::move(cb)}, last_errno{errno}]() {
+                cb(std::make_error_code(static_cast<std::errc>(last_errno)),
+                   {});
+            });
+            return;
+        }
+        else if (rc > 0)
+        {
+            std::string_view errMsg =
+                statusToString(static_cast<nvme_mi_resp_status>(rc));
+            std::cerr << "[bus: " << self->bus << ", addr: " << self->addr
+                      << ", eid: " << static_cast<int>(self->eid) << "]"
+                      << "fail to get chuck for telemetry log: " << errMsg
+                      << std::endl;
+            boost::asio::post(self->io, [cb{std::move(cb)}]() {
+                cb(std::make_error_code(std::errc::bad_message), {});
+            });
+            return;
+        }
+
+        if (rae == 0)
+        {
+            boost::asio::post(
+                self->io, [cb{std::move(cb)}, data{std::move(data)}]() mutable {
+                    std::span<uint8_t> span{data.data(), data.size()};
+                    cb({}, span);
+                });
+            return;
+        }
+
+        offset += size;
+        boost::asio::post(self->io,
+                          [self, ctrl, host, offset, data{std::move(data)},
+                           cb{std::move(cb)}]() mutable {
+            self->getTelemetryLogChuck(ctrl, host, offset, std::move(data),
+                                       std::move(cb));
+        });
+    });
 }
 
 void NVMeMi::adminGetLogPage(
@@ -575,7 +648,7 @@ void NVMeMi::adminGetLogPage(
         post([ctrl, nsid, lid, lsp, lsi, self{shared_from_this()},
               cb{std::move(cb)}]() {
             std::vector<uint8_t> data;
-
+            std::function<void(void)> logHandler;
             int rc = 0;
             switch (lid)
             {
@@ -692,37 +765,20 @@ void NVMeMi::adminGetLogPage(
                 // fall through to NVME_LOG_LID_TELEMETRY_CTRL
                 case NVME_LOG_LID_TELEMETRY_CTRL:
                 {
-                    bool host = false;
-                    bool create = false;
-                    if (lid == NVME_LOG_LID_TELEMETRY_HOST)
-                    {
-                        host = true;
-                        if (lsp == NVME_LOG_TELEM_HOST_LSP_CREATE)
-                        {
-                            create = true;
-                        }
-                        else if (lsp == NVME_LOG_TELEM_HOST_LSP_RETAIN)
-                        {
-                            create = false;
-                        }
-                        else
-                        {
-                            std::cerr << "[bus: " << self->bus
-                                      << ", addr: " << self->addr << ", eid: "
-                                      << static_cast<int>(self->eid) << "]"
-                                      << "invalid lsp for telemetry host log"
-                                      << std::endl;
-                            rc = -1;
-                            errno = EINVAL;
-                            break;
-                        }
-                    }
-                    else
-                    {
-                        host = false;
-                    }
+                    bool host =
+                        (lid == NVME_LOG_LID_TELEMETRY_HOST) ? true : false;
 
-                    rc = getTelemetryLog(ctrl, host, create, data);
+                    uint32_t size = 0;
+                    rc = getTelemetryLogSize(ctrl, host, size);
+                    if (rc == 0)
+                    {
+                        data.resize(size);
+                        logHandler = [self, ctrl, host, data{std::move(data)},
+                                      cb{std::move(cb)}]() mutable {
+                            self->getTelemetryLogChuck(
+                                ctrl, host, 0, std::move(data), std::move(cb));
+                        };
+                    }
                 }
                 break;
                 case NVME_LOG_LID_RESERVATION:
@@ -780,10 +836,9 @@ void NVMeMi::adminGetLogPage(
                           << ", eid: " << static_cast<int>(self->eid) << "]"
                           << "fail to get log page: " << std::strerror(errno)
                           << std::endl;
-                self->io.post([cb{std::move(cb)}, last_errno{errno}]() {
+                logHandler = [cb{std::move(cb)}, last_errno{errno}]() {
                     cb(std::make_error_code(static_cast<std::errc>(last_errno)), {});
-                });
-                return;
+                };
             }
             else if (rc > 0)
             {
@@ -792,16 +847,21 @@ void NVMeMi::adminGetLogPage(
                 std::cerr << "[bus: " << self->bus << ", addr: " << self->addr
                           << ", eid: " << static_cast<int>(self->eid) << "]"
                           << "fail to get log pag: " << errMsg << std::endl;
-                self->io.post([cb{std::move(cb)}]() {
+                logHandler = [cb{std::move(cb)}]() {
                     cb(std::make_error_code(std::errc::bad_message), {});
-                    return;
-                });
+                };
             }
 
-            self->io.post([cb{std::move(cb)}, data{std::move(data)}]() mutable {
-                std::span<uint8_t> span{data.data(), data.size()};
-                cb({}, span);
-            });
+            if (!logHandler)
+            {
+                logHandler =
+                    [cb{std::move(cb)}, data{std::move(data)}]() mutable {
+                    std::span<uint8_t> span{data.data(), data.size()};
+                    cb({}, span);
+                };
+            }
+            boost::asio::post(self->io, logHandler);
+
         });
     }
     catch (const std::runtime_error& e)

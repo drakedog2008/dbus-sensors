@@ -62,7 +62,7 @@ class NVMeMi : public NVMeMiIntf, public std::enable_shared_from_this<NVMeMi>
   private:
     // the transfer size for nvme mi messages.
     // define in github.com/linux-nvme/libnvme/blob/master/src/nvme/mi.c
-    static constexpr int nvme_mi_xfer_size = 4096;
+    static constexpr size_t nvme_mi_xfer_size = 4096;
 
     static nvme_root_t nvmeRoot;
 
@@ -127,4 +127,9 @@ class NVMeMi : public NVMeMiIntf, public std::enable_shared_from_this<NVMeMi>
     }
 
     std::error_code try_post(std::function<void(void)>&& func);
+
+    void getTelemetryLogChuck(
+        nvme_mi_ctrl_t ctrl, bool host, uint64_t offset,
+        std::vector<uint8_t>&& data,
+        std::function<void(const std::error_code&, std::span<uint8_t>)>&& cb);
 };
