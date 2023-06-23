@@ -98,7 +98,7 @@ void NVMeSubsystem::markFunctional(bool toggle)
         // is enabled
 
         controllers.clear();
-        plugin.reset();
+        // plugin.reset();
         return;
     }
     if (status == Status::Intiatilzing)
