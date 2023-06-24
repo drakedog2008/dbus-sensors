@@ -81,6 +81,16 @@ NVMeSubsystem::~NVMeSubsystem()
 
 void NVMeSubsystem::markFunctional(bool toggle)
 {
+    if (ctemp)
+    {
+        ctemp->markFunctional(toggle);
+    }
+
+    if (nvmeIntf.getProtocol() == NVMeIntf::Protocol::NVMeBasic)
+    {
+        return;
+    }
+
     // disable the subsystem
     if (!toggle)
     {
@@ -106,6 +116,7 @@ void NVMeSubsystem::markFunctional(bool toggle)
         throw std::runtime_error("cannot start: the subsystem is intiatilzing");
     }
     status = Status::Intiatilzing;
+    markAvailable(toggle);
 
     // add controllers for the subsystem
     if (nvmeIntf.getProtocol() == NVMeIntf::Protocol::NVMeMI)
@@ -123,6 +134,7 @@ void NVMeSubsystem::markFunctional(bool toggle)
                           << (ec ? ": " + ec.message() : "") << std::endl;
                 self->status = Status::Stop;
                 self->markFunctional(false);
+                self->markAvailable(false);
                 return;
             }
 
@@ -195,6 +207,7 @@ void NVMeSubsystem::markFunctional(bool toggle)
                               << std::endl;
                     self->status = Status::Stop;
                     self->markFunctional(false);
+                    self->markAvailable(false);
                     return;
                 }
                 nvme_secondary_ctrl_list& listHdr =
@@ -212,6 +225,7 @@ void NVMeSubsystem::markFunctional(bool toggle)
                               << std::endl;
                     self->status = Status::Stop;
                     self->markFunctional(false);
+                    self->markAvailable(false);
                     return;
                 }
 
@@ -226,6 +240,7 @@ void NVMeSubsystem::markFunctional(bool toggle)
                               << std::endl;
                     self->status = Status::Stop;
                     self->markFunctional(false);
+                    self->markAvailable(false);
                     return;
                 }
 
@@ -277,6 +292,27 @@ void NVMeSubsystem::markFunctional(bool toggle)
     }
 }
 
+void NVMeSubsystem::markAvailable(bool toggle)
+{
+    if (ctemp)
+    {
+        ctemp->markAvailable(toggle);
+    }
+
+    if (nvmeIntf.getProtocol() == NVMeIntf::Protocol::NVMeBasic)
+    {
+        return;
+    }
+
+    if (toggle)
+    {
+        // TODO: make the Available interface true
+        UnavailableCount = 0;
+        return;
+    }
+    // TODO: make the Available interface false
+    UnavailableCount = UnavailableMaxCount;
+}
 void NVMeSubsystem::start()
 {
     // add thermal sensor for the subsystem
@@ -331,8 +367,8 @@ void NVMeSubsystem::start()
             {
                 std::cerr << "error reading ctemp from subsystem"
                           << ", reason:" << error.message() << "\n";
-                self->ctemp->markFunctional(false);
-                self->ctemp->markAvailable(false);
+                self->markFunctional(false);
+                self->markAvailable(false);
                 return;
             }
             // other communication errors
@@ -347,7 +383,7 @@ void NVMeSubsystem::start()
             if (status == nullptr)
             {
                 std::cerr << "empty data returned by data fetcher" << std::endl;
-                self->ctemp->markFunctional(false);
+                self->markFunctional(false);
                 return;
             }
 
@@ -357,7 +393,7 @@ void NVMeSubsystem::start()
                 ((flags & NVMeBasicIntf::StatusFlags::
                               NVME_MI_BASIC_SFLGS_DRIVE_FUNCTIONAL) == 0))
             {
-                self->ctemp->markFunctional(false);
+                self->markFunctional(false);
                 return;
             }
             self->ctemp->updateValue(getTemperatureReading(status->Temp));
@@ -375,6 +411,14 @@ void NVMeSubsystem::start()
             [intf, self{std::move(shared_from_this())}](
                 std::function<void(const std::error_code&,
                                    nvme_mi_nvm_ss_health_status*)>&& cb) {
+            // do not poll the health status if subsystem is in cooldown
+            if (self->UnavailableCount > 0)
+            {
+                cb(std::make_error_code(std::errc::operation_canceled),
+                   nullptr);
+                return;
+            }
+
             // do not poll the health status if the subsystem is intiatilzing
             if (self->status == Status::Intiatilzing)
             {
@@ -389,6 +433,12 @@ void NVMeSubsystem::start()
         ctemp_process_t<nvme_mi_nvm_ss_health_status*> dataProcessor =
             [self{shared_from_this()}](const std::error_code& error,
                                        nvme_mi_nvm_ss_health_status* status) {
+            if (self->UnavailableCount > 0)
+            {
+                self->UnavailableCount--;
+                return;
+            }
+
             if (error == std::errc::operation_canceled ||
                 self->status == Status::Intiatilzing)
             {
@@ -406,8 +456,7 @@ void NVMeSubsystem::start()
                           << ", reason:" << error.message() << "\n";
                 // stop the subsystem
                 self->markFunctional(false);
-                self->ctemp->markFunctional(false);
-                self->ctemp->markAvailable(false);
+                self->markAvailable(false);
 
                 return;
             }
@@ -420,7 +469,7 @@ void NVMeSubsystem::start()
                 if (self->ctemp->inError())
                 {
                     self->markFunctional(false);
-                    self->ctemp->markFunctional(false);
+                    self->markAvailable(false);
                 }
                 return;
             }
@@ -430,10 +479,7 @@ void NVMeSubsystem::start()
             if (!df)
             {
                 // stop the subsystem
-
                 self->markFunctional(false);
-                self->ctemp->markFunctional(false);
-
                 return;
             }
 
@@ -460,7 +506,6 @@ void NVMeSubsystem::stop()
     {
         std::cerr << "status start" << std::endl;
         markFunctional(false);
-        ctemp->markFunctional(false);
     }
     else if (status == Status::Intiatilzing)
     {

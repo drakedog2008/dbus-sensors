@@ -74,4 +74,11 @@ class NVMeSubsystem : public std::enable_shared_from_this<NVMeSubsystem>
     // make the subsystem functional/functional be enabling/disabling the
     // storage controller, namespaces and thermal sensors.
     void markFunctional(bool toggle);
+
+    // mark the availability of the Storage device.
+    void markAvailable(bool toggle);
+
+    // a counter to skip health poll when NVMe subsystem becomes Unavailable
+    unsigned UnavailableCount = 0;
+    static constexpr unsigned UnavailableMaxCount = 60;
 };
