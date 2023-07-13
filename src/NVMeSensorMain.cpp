@@ -124,15 +124,6 @@ static void handleConfigurations(
     std::shared_ptr<sdbusplus::asio::connection>& dbusConnection,
     const ManagedObjectType& nvmeConfigurations)
 {
-    // todo: it'd be better to only update the ones we care about
-    for (const auto& [_, nvmeSubsys] : nvmeSubsysMap)
-    {
-        if (nvmeSubsys)
-        {
-            nvmeSubsys->stop();
-        }
-    }
-    nvmeSubsysMap.clear();
 
     /* We perform two iterations for configurations here. The first iteration is
      * to set up NVMeIntf. The second iter is to setup NVMe subsystem.
@@ -264,13 +255,57 @@ void createNVMeSubsystems(
     boost::asio::io_context& io, sdbusplus::asio::object_server& objectServer,
     std::shared_ptr<sdbusplus::asio::connection>& dbusConnection)
 {
+    // todo: it'd be better to only update the ones we care about
+    for (const auto& [_, nvmeSubsys] : nvmeSubsysMap)
+    {
+        if (nvmeSubsys)
+        {
+            nvmeSubsys->stop();
+        }
+    }
+    nvmeSubsysMap.clear();
+
+    static int count = 0;
+    static ManagedObjectType configs;
+    count += 2;
 
     auto getter = std::make_shared<GetSensorConfiguration>(
         dbusConnection, [&io, &objectServer, &dbusConnection](
                             const ManagedObjectType& nvmeConfigurations) {
-            handleConfigurations(io, objectServer, dbusConnection,
-                                 nvmeConfigurations);
+            configs = nvmeConfigurations;
+            count--;
+            if (count == 0)
+            {
+                handleConfigurations(io, objectServer, dbusConnection, configs);
+            }
+            else
+            {
+                std::cerr << "more than one `handleConfigurations` has been "
+                             "scheduled, cancel the current one"
+                          << std::endl;
+            }
         });
+    auto timer = std::make_shared<boost::asio::steady_timer>(
+        io, std::chrono::seconds(5));
+    timer->async_wait([&io, &objectServer, &dbusConnection,
+                       timer](const boost::system::error_code& ec) {
+        count--;
+        if (ec)
+        {
+            return;
+        }
+        if (count == 0)
+        {
+            handleConfigurations(io, objectServer, dbusConnection, configs);
+        }
+        else
+        {
+            std::cerr << "`handleConfigurations` has not been triggered, "
+                         "cancel the time"
+                      << std::endl;
+        }
+    });
+
     getter->getConfiguration(
         std::vector<std::string>{NVMeSubsystem::sensorType});
 }
