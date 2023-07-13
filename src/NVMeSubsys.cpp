@@ -341,7 +341,8 @@ void NVMeSubsystem::start()
         auto intf =
             std::get<std::shared_ptr<NVMeBasicIntf>>(nvmeIntf.getInferface());
         ctemp_fetch_t<NVMeBasicIntf::DriveStatus*> dataFether =
-            [intf, self{std::move(shared_from_this())}](
+            [intf, self{std::move(shared_from_this())},
+             timer = std::weak_ptr<boost::asio::steady_timer>(ctempTimer)](
                 std::function<void(const std::error_code&,
                                    NVMeBasicIntf::DriveStatus*)>&& cb) {
             /* Potentially defer sampling the sensor sensor if it is in error */
@@ -355,8 +356,10 @@ void NVMeSubsystem::start()
             intf->getStatus(std::move(cb));
         };
         ctemp_process_t<NVMeBasicIntf::DriveStatus*> dataProcessor =
-            [self{shared_from_this()}](const std::error_code& error,
-                                       NVMeBasicIntf::DriveStatus* status) {
+            [self{shared_from_this()},
+             timer = std::weak_ptr<boost::asio::steady_timer>(ctempTimer)](
+                const std::error_code& error,
+                NVMeBasicIntf::DriveStatus* status) {
             // deferred sampling
             if (error == std::errc::operation_canceled)
             {
@@ -408,7 +411,8 @@ void NVMeSubsystem::start()
             std::get<std::shared_ptr<NVMeMiIntf>>(nvmeIntf.getInferface());
 
         ctemp_fetch_t<nvme_mi_nvm_ss_health_status*> dataFether =
-            [intf, self{std::move(shared_from_this())}](
+            [intf, self{std::move(shared_from_this())},
+             timer = std::weak_ptr<boost::asio::steady_timer>(ctempTimer)](
                 std::function<void(const std::error_code&,
                                    nvme_mi_nvm_ss_health_status*)>&& cb) {
             // do not poll the health status if subsystem is in cooldown
@@ -431,16 +435,24 @@ void NVMeSubsystem::start()
             intf->miSubsystemHealthStatusPoll(std::move(cb));
         };
         ctemp_process_t<nvme_mi_nvm_ss_health_status*> dataProcessor =
-            [self{shared_from_this()}](const std::error_code& error,
-                                       nvme_mi_nvm_ss_health_status* status) {
+            [self{shared_from_this()},
+             timer = std::weak_ptr<boost::asio::steady_timer>(ctempTimer)](
+                const std::error_code& error,
+                nvme_mi_nvm_ss_health_status* status) {
             if (self->UnavailableCount > 0)
             {
                 self->UnavailableCount--;
                 return;
             }
 
-            if (error == std::errc::operation_canceled ||
-                self->status == Status::Intiatilzing)
+            if (error == std::errc::operation_canceled)
+            {
+                std::cerr << "processing health data has been cancelled"
+                          << std::endl;
+                return;
+            }
+
+            if (self->status == Status::Intiatilzing)
             {
                 // on initialization, the subsystem will not update the status.
                 std::cerr
@@ -501,23 +513,34 @@ void NVMeSubsystem::start()
 }
 void NVMeSubsystem::stop()
 {
-    ctempTimer->cancel();
-    if (status == Status::Start)
+    if (ctempTimer)
     {
-        std::cerr << "status start" << std::endl;
-        markFunctional(false);
+        ctempTimer->cancel();
+        ctempTimer.reset();
     }
-    else if (status == Status::Intiatilzing)
+
+    if (status == Status::Intiatilzing)
     {
         std::cerr << "status init" << std::endl;
-        ctempTimer->expires_after(std::chrono::milliseconds(100));
-        ctempTimer->async_wait(
-            [self{shared_from_this()}](boost::system::error_code ec) {
+        auto timer = std::make_shared<boost::asio::steady_timer>(
+            io, std::chrono::milliseconds(100));
+        timer->async_wait(
+            [self{shared_from_this()}, timer](boost::system::error_code ec) {
             if (ec)
             {
                 return;
             }
             self->stop();
         });
+    }
+    else
+    {
+        std::cerr << "status else" << std::endl;
+        markFunctional(false);
+    }
+
+    if (plugin)
+    {
+        plugin.reset();
     }
 }

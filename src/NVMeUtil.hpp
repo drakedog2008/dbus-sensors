@@ -116,7 +116,7 @@ using ctemp_process_t =
 
 template <class T>
 void pollCtemp(
-    std::shared_ptr<boost::asio::steady_timer> timer,
+    std::weak_ptr<boost::asio::steady_timer> timer,
     std::chrono::duration<double, std::milli> delay,
     const std::function<void(std::function<void(const std::error_code&, T)>&&)>&
         dataFetcher,
@@ -127,23 +127,31 @@ namespace detail
 {
 
 template <class T>
-void updateCtemp(std::shared_ptr<boost::asio::steady_timer> timer,
+void updateCtemp(std::weak_ptr<boost::asio::steady_timer> timer,
                  std::chrono::duration<double, std::milli> delay,
                  ctemp_process_t<T> dataProcessor, ctemp_fetch_t<T> dataFetcher,
                  const std::error_code& error, T data)
 {
+    if (timer.expired())
+    {
+        dataProcessor(std::make_error_code(std::errc::operation_canceled),
+                      data);
+        return;
+    }
+
     dataProcessor(error, data);
     ::pollCtemp(std::move(timer), std::move(delay), dataFetcher, dataProcessor);
 }
 
 template <class T>
-void pollCtemp(std::shared_ptr<boost::asio::steady_timer> timer,
+void pollCtemp(std::weak_ptr<boost::asio::steady_timer> timer,
                std::chrono::duration<double, std::milli> delay,
                ctemp_fetch_t<T> dataFetcher, ctemp_process_t<T> dataProcessor,
                const boost::system::error_code errorCode)
 {
-    if (errorCode == boost::asio::error::operation_aborted)
+    if (errorCode == boost::asio::error::operation_aborted || timer.expired())
     {
+        std::cerr << "poll loop has been cancelled" << std::endl;
         return;
     }
     if (errorCode)
@@ -162,13 +170,14 @@ void pollCtemp(std::shared_ptr<boost::asio::steady_timer> timer,
 
 template <class T>
 void pollCtemp(
-    std::shared_ptr<boost::asio::steady_timer> timer,
+    std::weak_ptr<boost::asio::steady_timer> weakTimer,
     std::chrono::duration<double, std::milli> delay,
     const std::function<void(std::function<void(const std::error_code&, T)>&&)>&
         dataFetcher,
     const std::function<void(const std::error_code& error, T data)>&
         dataProcessor)
 {
+    auto timer = weakTimer.lock();
     if (!timer)
     {
         return;
